@@ -4,10 +4,11 @@
 #include <atomic>
 #include <thread>
 #include <immintrin.h>
+#include <time.h>
 
 #define assert(x) do { if (!(x)) { fprintf(stderr, "***ASSERT FAILED*** %s\n", #x); __builtin_trap(); } } while (0)
 
-#define DBG 1
+#define DBG 0
 
 #if DBG
 #define print(...) printf(__VA_ARGS__)
@@ -50,17 +51,12 @@ int worker_loop(WorkerInit init)
   [[maybe_unused]] int id = init.id;
 
   size_t loop_count = 0;
+  size_t work_count = 0;
   int mask = 1;
   int max = 64;
   while (ctl->die.load(std::memory_order_acquire) == false) {
     size_t tail = ctl->tail.load(std::memory_order_acquire);
     size_t head = ctl->head.load(std::memory_order_acquire);
-
-#if 0
-    struct timespec ts = {};
-    ts.tv_nsec = 100'000'000;
-    nanosleep(&ts, NULL);
-#endif
 
     Work w = ctl->work[tail & (MAX_WORK-1)];
     if (tail < head && std::atomic_compare_exchange_strong(&ctl->tail, &tail, tail + 1) == true) {
@@ -69,7 +65,9 @@ int worker_loop(WorkerInit init)
       w.fn(w.arg);
       if (w.is_done != nullptr)
         w.is_done->store(true, std::memory_order_release);
+      print("Worker %i completed work: head = %lu, tail = %lu (loop_count = %lu)\n", id, head, tail, loop_count);
 
+      work_count += 1;
       mask = 1;
     }
 
@@ -80,7 +78,7 @@ int worker_loop(WorkerInit init)
     loop_count += 1;
   }
 
-  print("Worker %i returning\n", id);
+  print("Worker %i returning, completed %lu loops and %lu work\n", id, loop_count, work_count);
   return 0;
 }
 
@@ -106,7 +104,7 @@ int add_work(WorkCtl& ctl, Work *work, int count)
   int pos = 0;
   size_t head = ctl.head;
   size_t tail = ctl.tail.load(std::memory_order_acquire);
-  while (head - tail < MAX_WORK) {
+  while (count - pos > 0 && head - tail < MAX_WORK) {
     size_t dist = MAX_WORK - (head - tail);
     size_t rem = count - pos;
 
@@ -150,7 +148,7 @@ WORK_SIG(work_test)
 
 int main() {
 
-  int cnt = 1'000'000;
+  int cnt = 100'000'000;
   std::vector<int> to(cnt);
   std::vector<int> from(cnt);
 
@@ -176,13 +174,19 @@ int main() {
     w[i].is_done = &b[i];
   }
 
+  clock_t tim = clock();
+
   for (int i=0; i < cnt / stride;) {
     i += add_work(ctl, w.data() + i, cnt / stride - i);
   }
 
-  while(b[b.size()-1].load(std::memory_order_acquire) != true)
-    _mm_sfence();
+  unsigned short s = 0;
+  while(s < 0xffff)
+    for (int i=0; i < 16; ++i)
+      s |= b[b.size()-1].load(std::memory_order_acquire) << i;
+
   _mm_mfence();
+  printf("Elapsed %f seconds\n", (double) (clock() - tim) / CLOCKS_PER_SEC);
 
   for (size_t i = 0; i < to.size() - 1; ++i) {
     if (to[i] != to[i+1] - 1) {

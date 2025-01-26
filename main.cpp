@@ -5,6 +5,7 @@
 #include <thread>
 #include <immintrin.h>
 #include <time.h>
+#include <unistd.h>
 
 #define assert(x) do { if (!(x)) { fprintf(stderr, "***ASSERT FAILED*** %s\n", #x); __builtin_trap(); } } while (0)
 
@@ -50,16 +51,24 @@ int worker_loop(WorkerInit init)
   WorkCtl *ctl = init.ctl;
   [[maybe_unused]] int id = init.id;
 
-  size_t loop_count = 0;
-  size_t work_count = 0;
+  size_t lc = 0;
+  size_t wc = 0;
   int mask = 1;
   int max = 64;
   while (ctl->die.load(std::memory_order_acquire) == false) {
     size_t tail = ctl->tail.load(std::memory_order_acquire);
     size_t head = ctl->head.load(std::memory_order_acquire);
 
+    // I am not going to count this as increasing the loop count because we are not contending for
+    // work here, just checking if any has become available.  Maybe 'loop_count' should be renamed
+    // to indicate that is more so a measure of contention, as opposed to a measure of iterations.
+    if (tail == head) {
+      sleep(0);
+      continue;
+    }
+
     Work w = ctl->work[tail & (MAX_WORK-1)];
-    if (tail < head && std::atomic_compare_exchange_strong(&ctl->tail, &tail, tail + 1) == true) {
+    if (std::atomic_compare_exchange_strong(&ctl->tail, &tail, tail + 1) == true) {
       print("Worker %i got work: head = %lu, tail = %lu (loop_count = %lu)\n", id, head, tail, loop_count);
 
       w.fn(w.arg);
@@ -67,7 +76,7 @@ int worker_loop(WorkerInit init)
         w.is_done->store(true, std::memory_order_release);
       print("Worker %i completed work: head = %lu, tail = %lu (loop_count = %lu)\n", id, head, tail, loop_count);
 
-      work_count += 1;
+      wc += 1;
       mask = 1;
     }
 
@@ -75,10 +84,10 @@ int worker_loop(WorkerInit init)
       _mm_pause();
     mask = mask < max ? max << 1 : max;
 
-    loop_count += 1;
+    lc += 1;
   }
 
-  printf("Worker %i returning, completed %lu loops and %lu work\n", id, loop_count, work_count);
+  printf("Worker %i returning, completed %lu loops and %lu work\n", id, lc, wc);
   return 0;
 }
 
@@ -158,7 +167,7 @@ int main() {
   WorkCtl ctl;
   init_workctl(ctl);
 
-  int stride = 1000;
+  int stride = 50;
   std::vector<WorkTest> wt(cnt / stride);
   std::vector<Work> w(cnt / stride);
   std::vector<std::atomic<bool>> b(cnt / stride);
@@ -174,7 +183,7 @@ int main() {
     w[i].is_done = &b[i];
   }
 
-  clock_t tim = clock();
+  std::clock_t tim = std::clock();
 
   for (int i=0; i < cnt / stride;) {
     i += add_work(ctl, w.data() + i, cnt / stride - i);

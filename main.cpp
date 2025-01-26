@@ -78,7 +78,7 @@ int worker_loop(WorkerInit init)
     loop_count += 1;
   }
 
-  print("Worker %i returning, completed %lu loops and %lu work\n", id, loop_count, work_count);
+  printf("Worker %i returning, completed %lu loops and %lu work\n", id, loop_count, work_count);
   return 0;
 }
 
@@ -158,7 +158,7 @@ int main() {
   WorkCtl ctl;
   init_workctl(ctl);
 
-  int stride = 20;
+  int stride = 1000;
   std::vector<WorkTest> wt(cnt / stride);
   std::vector<Work> w(cnt / stride);
   std::vector<std::atomic<bool>> b(cnt / stride);
